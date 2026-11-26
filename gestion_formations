@@ -1,0 +1,70 @@
+"""Gestion des formations, des inscriptions et de leur statut."""
+from datetime import datetime, timedelta
+from models import Formation
+from validation import ErreurRH, FormationInexistante, convertir_date
+
+
+class GestionFormations:
+    NOM_FICHIER = "formations"
+
+    def __init__(self, stockage, gestion_employes):
+        self.stockage = stockage
+        self.gestion_employes = gestion_employes
+        self.formations = [Formation.from_dict(d)
+                           for d in self.stockage.charger(self.NOM_FICHIER)]
+
+    def sauvegarder(self):
+        self.stockage.sauvegarder(self.NOM_FICHIER,
+                                  [f.to_dict() for f in self.formations])
+
+    def _nouvel_id(self):
+        return max((f.id for f in self.formations), default=0) + 1
+
+    def trouver(self, id):
+        for f in self.formations:
+            if f.id == id:
+                return f
+        raise FormationInexistante(f"Aucune formation avec l'id {id}")
+
+    def ajouter(self, nom, date, duree, formateur):
+        formation = Formation(self._nouvel_id(), nom, date, duree, formateur)
+        self.formations.append(formation)
+        self.sauvegarder()
+        return formation
+
+    def inscrire(self, id_formation, id_employe):
+        formation = self.trouver(id_formation)
+        employe = self.gestion_employes.trouver(id_employe)  # lève EmployeIntrouvable
+        if not employe.actif:
+            raise ErreurRH("Cet employé est inactif")
+        if str(id_employe) in formation.inscriptions:
+            raise ErreurRH("Cet employé est déjà inscrit à cette formation")
+        formation.inscriptions[str(id_employe)] = Formation.STATUTS[0]  # À faire
+        self.sauvegarder()
+
+    def changer_statut(self, id_formation, id_employe, statut):
+        formation = self.trouver(id_formation)
+        if statut not in Formation.STATUTS:
+            raise ErreurRH(f"Statut invalide : {statut}")
+        if str(id_employe) not in formation.inscriptions:
+            raise ErreurRH("Cet employé n'est pas inscrit à cette formation")
+        formation.inscriptions[str(id_employe)] = statut
+        self.sauvegarder()
+
+    def formations_de(self, id_employe):
+        """Liste de tuples (formation, statut) pour un employé."""
+        self.gestion_employes.trouver(id_employe)
+        return [(f, f.inscriptions[str(id_employe)])
+                for f in self.formations if str(id_employe) in f.inscriptions]
+
+    def sans_formation_depuis_un_an(self, date_ref=None):
+        """Employés actifs sans formation complétée durant les 365 derniers jours."""
+        date_ref = date_ref or datetime.now()
+        limite = date_ref - timedelta(days=365)
+        recents = set()
+        for f in self.formations:
+            if limite <= convertir_date(f.date) <= date_ref:
+                recents.update(int(i) for i, st in f.inscriptions.items()
+                               if st == "Complétée")
+        return [e for e in self.gestion_employes.employes
+                if e.actif and e.id not in recents]
