@@ -1,0 +1,110 @@
+"""Messagerie interne : envoi à un employé ou à un département, lu / non lu."""
+from datetime import datetime
+from models import Message
+from validation import ErreurRH
+
+
+class GestionMessages:
+    NOM_FICHIER = "messages"
+
+    def __init__(self, stockage, gestion_employes):
+        self.stockage = stockage
+        self.gestion_employes = gestion_employes
+        self.messages = [Message.from_dict(d)
+                         for d in self.stockage.charger(self.NOM_FICHIER)]
+
+    def sauvegarder(self):
+        self.stockage.sauvegarder(self.NOM_FICHIER,
+                                  [m.to_dict() for m in self.messages])
+
+    def _nouvel_id(self):
+        return max((m.id for m in self.messages), default=0) + 1
+
+    def trouver(self, id):
+        for m in self.messages:
+            if m.id == id:
+                return m
+        raise ErreurRH(f"Aucun message avec l'id {id}")
+
+    def _nom(self, id_employe):
+        try:
+            e = self.gestion_employes.trouver(id_employe)
+            return f"{e.prenom} {e.nom}"
+        except ErreurRH:
+            return "(employé supprimé)"
+
+    # ---------- envoi ----------
+    def _creer(self, id_exp, type_dest, dest, contenu):
+        message = Message(self._nouvel_id(), id_exp, type_dest, dest, contenu,
+                          datetime.now().strftime(Message.FORMAT_DATE))
+        self.messages.append(message)
+        self.sauvegarder()
+        return message
+
+    def envoyer_a_employe(self, id_exp, id_dest, contenu):
+        self.gestion_employes.trouver(id_exp)    # lève EmployeIntrouvable
+        self.gestion_employes.trouver(id_dest)
+        if id_exp == id_dest:
+            raise ErreurRH("Un employé ne peut pas s'envoyer un message à lui-même")
+        return self._creer(id_exp, "employe", id_dest, contenu)
+
+    def envoyer_a_departement(self, id_exp, departement, contenu):
+        self.gestion_employes.trouver(id_exp)
+        noms = {e.departement.lower(): e.departement
+                for e in self.gestion_employes.employes}
+        if departement.strip().lower() not in noms:
+            raise ErreurRH(f"Département introuvable : {departement}")
+        return self._creer(id_exp, "departement", noms[departement.strip().lower()], contenu)
+
+    # ---------- réception ----------
+    def _ids_destinataires(self, message):
+        if message.type_destinataire == "employe":
+            return [message.destinataire]
+        return [e.id for e in self.gestion_employes.employes
+                if e.departement == message.destinataire
+                and e.id != message.id_expediteur]
+
+    def boite_reception(self, id_employe, seulement_non_lus=False):
+        self.gestion_employes.trouver(id_employe)
+        recus = [m for m in self.messages if id_employe in self._ids_destinataires(m)]
+        if seulement_non_lus:
+            recus = [m for m in recus if not self.est_lu(m, id_employe)]
+        return recus
+
+    def envoyes(self, id_employe):
+        self.gestion_employes.trouver(id_employe)
+        return [m for m in self.messages if m.id_expediteur == id_employe]
+
+    def est_lu(self, message, id_employe):
+        return id_employe in message.lu_par
+
+    def _verifier_destinataire(self, message, id_employe):
+        self.gestion_employes.trouver(id_employe)
+        if id_employe not in self._ids_destinataires(message):
+            raise ErreurRH("Ce message n'est pas dans la boîte de réception de cet employé")
+
+    def marquer_lu(self, id_message, id_employe):
+        message = self.trouver(id_message)
+        self._verifier_destinataire(message, id_employe)
+        if id_employe not in message.lu_par:
+            message.lu_par.append(id_employe)
+            self.sauvegarder()
+
+    def marquer_non_lu(self, id_message, id_employe):
+        message = self.trouver(id_message)
+        self._verifier_destinataire(message, id_employe)
+        if id_employe in message.lu_par:
+            message.lu_par.remove(id_employe)
+            self.sauvegarder()
+
+    # ---------- affichage ----------
+    def formater(self, message, id_lecteur=None):
+        if message.type_destinataire == "employe":
+            cible = self._nom(message.destinataire)
+        else:
+            cible = f"département {message.destinataire}"
+        statut = ""
+        if id_lecteur is not None and id_lecteur != message.id_expediteur:
+            statut = "[lu] " if self.est_lu(message, id_lecteur) else "[NON LU] "
+        return (f"[{message.id}] {statut}{message.date} | De : "
+                f"{self._nom(message.id_expediteur)} → {cible}\n      {message.contenu}")
