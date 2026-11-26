@@ -1,0 +1,69 @@
+"""Gestion des évaluations annuelles et calcul des moyennes."""
+from datetime import timedelta
+from models import Evaluation
+from validation import ErreurRH, convertir_date
+
+
+class GestionEvaluations:
+    NOM_FICHIER = "evaluations"
+
+    def __init__(self, stockage, gestion_employes):
+        self.stockage = stockage
+        self.gestion_employes = gestion_employes
+        self.evaluations = [Evaluation.from_dict(d)
+                            for d in self.stockage.charger(self.NOM_FICHIER)]
+
+    def sauvegarder(self):
+        self.stockage.sauvegarder(self.NOM_FICHIER,
+                                  [e.to_dict() for e in self.evaluations])
+
+    def _nouvel_id(self):
+        return max((e.id for e in self.evaluations), default=0) + 1
+
+    # ---------- création ----------
+    def ajouter(self, id_employe, date, notes, commentaire=""):
+        self.gestion_employes.trouver(id_employe)  # lève EmployeIntrouvable
+        evaluation = Evaluation(self._nouvel_id(), id_employe, date, notes, commentaire)
+        annee = convertir_date(evaluation.date).year
+        for e in self.evaluations_de(id_employe):
+            if convertir_date(e.date).year == annee:
+                raise ErreurRH(f"Cet employé a déjà une évaluation pour {annee}")
+        self.evaluations.append(evaluation)
+        self.sauvegarder()
+        return evaluation
+
+    def evaluations_de(self, id_employe):
+        return sorted((e for e in self.evaluations if e.id_employe == id_employe),
+                      key=lambda e: convertir_date(e.date))
+
+    # ---------- moyennes ----------
+    @staticmethod
+    def _moyenne(valeurs):
+        return round(sum(valeurs) / len(valeurs), 2) if valeurs else None
+
+    def moyenne_employe(self, id_employe):
+        self.gestion_employes.trouver(id_employe)
+        return self._moyenne([e.moyenne() for e in self.evaluations_de(id_employe)])
+
+    def moyennes_par_poste(self):
+        """Dictionnaire {poste: moyenne} (toutes les évaluations des employés du poste)."""
+        par_poste = {}
+        for e in self.evaluations:
+            try:
+                poste = self.gestion_employes.trouver(e.id_employe).poste
+            except ErreurRH:
+                continue  # employé supprimé
+            par_poste.setdefault(poste, []).append(e.moyenne())
+        return {p: self._moyenne(v) for p, v in sorted(par_poste.items())}
+
+    # ---------- utile pour les alertes (étape suivante) ----------
+    def prochaine_evaluation(self, id_employe):
+        """Date de la prochaine évaluation (dernière + 1 an), ou None si aucune."""
+        liste = self.evaluations_de(id_employe)
+        if not liste:
+            return None
+        derniere = convertir_date(liste[-1].date)
+        try:
+            return derniere.replace(year=derniere.year + 1)
+        except ValueError:  # 29 février
+            return derniere + timedelta(days=365)
