@@ -1,0 +1,42 @@
+"""Génération des alertes RH."""
+from datetime import datetime
+
+
+class GestionAlertes:
+    def __init__(self, gestion_employes, gestion_conges,
+                 gestion_evaluations, gestion_formations, jours_avant_evaluation=7):
+        self.employes = gestion_employes
+        self.conges = gestion_conges
+        self.evaluations = gestion_evaluations
+        self.formations = gestion_formations
+        self.jours_avant_evaluation = jours_avant_evaluation
+
+    def generer(self, date_ref=None):
+        """Retourne la liste des messages d'alerte (date_ref = date du jour par défaut)."""
+        date_ref = date_ref or datetime.now()
+        alertes = []
+
+        # 1. Évaluation annuelle dans les 7 jours (ou en retard)
+        for e in self.employes.employes:
+            if not e.actif:
+                continue
+            prochaine = self.evaluations.prochaine_evaluation(e.id)
+            if prochaine is None:
+                continue
+            reste = (prochaine - date_ref).days
+            if 0 <= reste <= self.jours_avant_evaluation:
+                alertes.append(f"📝 Évaluation annuelle de {e.prenom} {e.nom} "
+                               f"dans {reste} jour(s) ({prochaine.strftime('%d/%m/%Y')})")
+            elif reste < 0:
+                alertes.append(f"📝 Évaluation annuelle de {e.prenom} {e.nom} "
+                               f"en retard de {-reste} jour(s)")
+
+        # 2. Demandes de congé en attente de validation
+        for c in self.conges.en_attente():
+            alertes.append(f"🏖 Congé en attente de validation : {c}")
+
+        # 3. Employés sans formation depuis un an
+        for e in self.formations.sans_formation_depuis_un_an(date_ref):
+            alertes.append(f"🎓 {e.prenom} {e.nom} n'a suivi aucune formation depuis un an")
+
+        return alertes
