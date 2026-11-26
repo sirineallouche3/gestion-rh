@@ -1,0 +1,89 @@
+"""Rapports RH et export en CSV ou TXT."""
+import calendar
+import csv
+import os
+from datetime import datetime, timedelta
+from validation import ErreurRH
+
+
+class GestionRapports:
+    def __init__(self, gestion_employes, gestion_conges,
+                 gestion_evaluations, gestion_formations, dossier_export="exports"):
+        self.employes = gestion_employes
+        self.conges = gestion_conges
+        self.evaluations = gestion_evaluations
+        self.formations = gestion_formations
+        self.dossier_export = dossier_export
+
+    # Chaque rapport retourne (entêtes, lignes) pour pouvoir être affiché ou exporté.
+
+    @staticmethod
+    def _jours_ouvres(annee, mois=None):
+        """Liste des jours ouvrés (lundi-vendredi) de l'année ou du mois."""
+        mois_liste = [mois] if mois else range(1, 13)
+        jours = []
+        for m in mois_liste:
+            for j in range(1, calendar.monthrange(annee, m)[1] + 1):
+                d = datetime(annee, m, j)
+                if d.weekday() < 5:
+                    jours.append(d)
+        return jours
+
+    def taux_absenteisme(self, annee, mois=None):
+        """Taux = jours ouvrés d'absence validée / (effectif actif × jours ouvrés)."""
+        ouvres = self._jours_ouvres(annee, mois)
+        ensemble_ouvres = set(ouvres)
+        departements = sorted({e.departement for e in self.employes.employes if e.actif})
+        lignes = []
+        for dep in departements:
+            ids = {e.id for e in self.employes.employes if e.actif and e.departement == dep}
+            absences = set()
+            for c in self.conges.conges:
+                if c.statut == "validé" and c.id_employe in ids:
+                    absences.update((c.id_employe, j) for j in c.jours()
+                                    if j in ensemble_ouvres)
+            total = len(ids) * len(ouvres)
+            taux = round(100 * len(absences) / total, 2) if total else 0.0
+            lignes.append([dep, len(ids), len(absences), len(ouvres), taux])
+        entetes = ["Département", "Effectif actif", "Jours d'absence",
+                   "Jours ouvrés période", "Taux d'absentéisme (%)"]
+        return entetes, lignes
+
+    def moyennes_evaluations_par_poste(self):
+        lignes = [[poste, moyenne]
+                  for poste, moyenne in self.evaluations.moyennes_par_poste().items()]
+        return ["Poste", "Moyenne des évaluations (/20)"], lignes
+
+    def employes_sans_formation(self, date_ref=None):
+        lignes = [[e.id, e.nom, e.prenom, e.poste, e.departement]
+                  for e in self.formations.sans_formation_depuis_un_an(date_ref)]
+        return ["Id", "Nom", "Prénom", "Poste", "Département"], lignes
+
+    # ---------- export ----------
+    def exporter(self, nom_rapport, entetes, lignes, format_fichier):
+        """Écrit le rapport dans le dossier exports/ et retourne le chemin du fichier."""
+        format_fichier = format_fichier.strip().lower()
+        if format_fichier not in ("csv", "txt"):
+            raise ErreurRH("Format d'export invalide (csv ou txt)")
+        os.makedirs(self.dossier_export, exist_ok=True)
+        chemin = os.path.join(self.dossier_export, f"{nom_rapport}.{format_fichier}")
+        if format_fichier == "csv":
+            # utf-8-sig et ';' : s'ouvre correctement dans Excel (accents)
+            with open(chemin, "w", newline="", encoding="utf-8-sig") as f:
+                ecrivain = csv.writer(f, delimiter=";")
+                ecrivain.writerow(entetes)
+                ecrivain.writerows(lignes)
+        else:
+            with open(chemin, "w", encoding="utf-8") as f:
+                f.write(self.en_texte(entetes, lignes) + "\n")
+        return chemin
+
+    @staticmethod
+    def en_texte(entetes, lignes):
+        """Tableau texte aligné (affichage console et export TXT)."""
+        table = [[str(x) for x in entetes]] + [[str(x) for x in l] for l in lignes]
+        largeurs = [max(len(l[i]) for l in table) for i in range(len(entetes))]
+        formater = lambda l: " | ".join(c.ljust(largeurs[i]) for i, c in enumerate(l))
+        sortie = [formater(table[0]), "-+-".join("-" * w for w in largeurs)]
+        sortie += [formater(l) for l in table[1:]]
+        return "\n".join(sortie)
